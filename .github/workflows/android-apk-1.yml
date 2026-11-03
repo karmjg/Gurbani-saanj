@@ -22,7 +22,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zip='Gurbani_Saanjh_App_Source_v1.4.1.zip'
+
+          zip='Gurbani_Saanjh_App_Source_v1.6.0.zip'
 
           if [[ ! -f "$zip" ]]; then
             echo "::error::Missing $zip in repository root."
@@ -31,7 +32,7 @@ jobs:
 
           unzip -oq "$zip" -d .
 
-          for required in package.json capacitor.config.json scripts/patch-android.mjs www/index.html; do
+          for required in package.json capacitor.config.json scripts/patch-android.mjs www/index.html scripts/bundle-offline.mjs; do
             if [[ ! -f "$required" ]]; then
               echo "::error::Missing $required in source ZIP."
               exit 1
@@ -62,6 +63,15 @@ jobs:
             'platforms;android-36' \
             'build-tools;36.0.0' \
             'platform-tools'
+
+      - name: Verify offline scripture importer
+        run: |
+          node scripts/bundle-offline.mjs --fixture
+
+      - name: Build complete offline Gurbani library
+        timeout-minutes: 45
+        run: |
+          node scripts/bundle-offline.mjs
 
       - name: Install app dependencies
         env:
@@ -103,7 +113,6 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-
         run: |
           set -euo pipefail
 
@@ -156,7 +165,6 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-
         run: |
           set -euo pipefail
 
@@ -165,5 +173,5 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" "$APK_PATH" \
               --title "Gurbani Saanjh $GITHUB_REF_NAME" \
-              --notes "Android personal trial release."
+              --notes "Offline reading trial. Audio and live AI not included."
           fi
