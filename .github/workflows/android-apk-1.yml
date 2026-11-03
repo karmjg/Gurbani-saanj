@@ -1,3 +1,4 @@
+
 name: Build Gurbani Saanjh Android APK
 
 on:
@@ -12,6 +13,7 @@ permissions:
 jobs:
   android-apk:
     runs-on: ubuntu-24.04
+
     steps:
       - name: Get app files
         uses: actions/checkout@v4
@@ -20,18 +22,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zip='Gurbani_Saanjh_App_Source_v1.6.1.zip'
+
+          zip='GS_v170_source.zip'
+
           if [[ ! -f "$zip" ]]; then
-            echo "::error::Missing $zip in the repository root. Upload the ZIP as a file before running this workflow."
+            echo "::error::Missing $zip in repository root."
             exit 1
           fi
+
           unzip -oq "$zip" -d .
-          for required in package.json capacitor.config.json scripts/patch-android.mjs www/index.html; do
+
+          for required in package.json capacitor.config.json scripts/patch-android.mjs www/index.html scripts/bundle-offline.mjs; do
             if [[ ! -f "$required" ]]; then
-              echo "::error::App source ZIP does not contain $required at its top level."
+              echo "::error::Missing $required in source ZIP."
               exit 1
             fi
           done
+
           echo "Android source extracted successfully"
 
       - name: Set up Node 22
@@ -39,7 +46,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Set up JDK 21
+      - name: Set up Java 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -50,17 +57,23 @@ jobs:
         with:
           packages: 'platform-tools'
 
-      - name: Install Android 16 SDK and build tools
-        run: sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+      - name: Install Android SDK and build tools
+        run: |
+          sdkmanager --install \
+            'platforms;android-36' \
+            'build-tools;36.0.0' \
+            'platform-tools'
 
-      - name: Verify offline importer against fixture
-        run: node scripts/bundle-offline.mjs --fixture
+      - name: Verify offline scripture importer
+        run: |
+          node scripts/bundle-offline.mjs --fixture
 
       - name: Build complete offline Gurbani library
-        run: node scripts/bundle-offline.mjs
         timeout-minutes: 45
+        run: |
+          node scripts/bundle-offline.mjs
 
-      - name: Install Capacitor and compile local app resources
+      - name: Install app dependencies
         env:
           GS_GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
@@ -68,31 +81,32 @@ jobs:
           npm run build:web
 
       - name: Create Android project
+        env:
+          GS_VERSION_CODE: ${{ github.run_number }}
         run: |
           npx cap add android
           npx cap sync android
           node scripts/patch-android.mjs
-        env:
-          GS_VERSION_CODE: ${{ github.run_number }}
 
-      - name: Check tag matches app version
+      - name: Verify release version
         shell: bash
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             EXPECTED="v$(node -p 'require("./package.json").version')"
+
             if [[ "$GITHUB_REF_NAME" != "$EXPECTED" ]]; then
-              echo "::error::Git tag $GITHUB_REF_NAME does not match package.json version $EXPECTED"
+              echo "::error::Git tag does not match app version."
               exit 1
             fi
           fi
 
-      - name: Build unsigned release APK
+      - name: Build unsigned Android APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew --no-daemon assembleRelease
 
-      - name: Sign, verify and name APK (fixed private signing key)
+      - name: Sign Android APK
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -101,34 +115,44 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
+
           for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
             if [[ -z "${!name:-}" ]]; then
-              echo "::error::$name is missing. See SETUP_ANDROID.md; never put signing keys in the repository."
+              echo "::error::Missing signing secret: $name"
               exit 1
             fi
           done
+
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > signing-private.jks
+
           unsigned='android/app/build/outputs/apk/release/app-release-unsigned.apk'
+
           if [[ ! -f "$unsigned" ]]; then
-            echo "::error::Unsigned release APK not found at $unsigned"
-            ls -lah android/app/build/outputs/apk/release/
+            echo "::error::Unsigned APK not found."
             exit 1
           fi
+
           tools="$ANDROID_HOME/build-tools/36.0.0"
+
           "$tools/zipalign" -f -p 4 "$unsigned" aligned.apk
+
           version="$(node -p 'require("./package.json").version')"
           apk="Gurbani_Saanjh_v${version}.apk"
+
           "$tools/apksigner" sign \
             --ks signing-private.jks \
             --ks-key-alias "$ANDROID_KEY_ALIAS" \
             --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
             --key-pass env:ANDROID_KEY_PASSWORD \
             --out "$apk" aligned.apk
+
           "$tools/apksigner" verify --verbose "$apk"
+
           echo "APK_PATH=$apk" >> "$GITHUB_ENV"
+
           rm -f signing-private.jks aligned.apk
 
-      - name: Make signed APK downloadable from Actions
+      - name: Upload signed Android APK
         uses: actions/upload-artifact@v4
         with:
           name: Gurbani-Saanjh-Android-APK
@@ -136,17 +160,18 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish signed APK to GitHub Releases (version tag only)
+      - name: Publish APK to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "$APK_PATH" --clobber
           else
             gh release create "$GITHUB_REF_NAME" "$APK_PATH" \
               --title "Gurbani Saanjh $GITHUB_REF_NAME" \
-              --notes "Android personal-trial release. BaniDB source snapshot included for non-profit offline reading. Audio and live AI not included."
+              --notes "Offline reading trial with page-turn animation. Audio and live AI not included."
           fi
