@@ -1,3 +1,4 @@
+
 name: Build Gurbani Saanjh Android APK
 
 on:
@@ -12,6 +13,7 @@ permissions:
 jobs:
   android-apk:
     runs-on: ubuntu-24.04
+
     steps:
       - name: Get app files
         uses: actions/checkout@v4
@@ -22,16 +24,19 @@ jobs:
           set -euo pipefail
           zip='Gurbani_Saanjh_App_Source_v1.1.zip'
           if [[ ! -f "$zip" ]]; then
-            echo "::error::Missing $zip in the repository root. Upload the ZIP as a file before running this workflow."
+            echo "::error::Missing $zip in repository root."
             exit 1
           fi
+
           unzip -oq "$zip" -d .
+
           for required in package.json capacitor.config.json scripts/patch-android.mjs www/index.html; do
             if [[ ! -f "$required" ]]; then
-              echo "::error::App source ZIP does not contain $required at its top level."
+              echo "::error::Missing $required in source ZIP."
               exit 1
             fi
           done
+
           echo "Android source extracted successfully"
 
       - name: Set up Node 22
@@ -46,12 +51,18 @@ jobs:
           java-version: '21'
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
-      - name: Install Android 16 SDK and build tools
-        run: sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+      - name: Install Android SDK and build tools
+        run: |
+          sdkmanager --install \
+            'platforms;android-36' \
+            'build-tools;36.0.0' \
+            'platform-tools'
 
-      - name: Install Capacitor and compile local app resources
+      - name: Install dependencies and build web resources
         env:
           GS_GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
@@ -59,67 +70,79 @@ jobs:
           npm run build:web
 
       - name: Create Android project
+        env:
+          GS_VERSION_CODE: ${{ github.run_number }}
         run: |
           npx cap add android
           npx cap sync android
           node scripts/patch-android.mjs
-        env:
-          GS_VERSION_CODE: ${{ github.run_number }}
 
-      - name: Check tag matches app version
+      - name: Verify release version
         shell: bash
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             EXPECTED="v$(node -p 'require("./package.json").version')"
+
             if [[ "$GITHUB_REF_NAME" != "$EXPECTED" ]]; then
-              echo "::error::Git tag $GITHUB_REF_NAME does not match package.json version $EXPECTED"
+              echo "::error::Git tag does not match package version."
               exit 1
             fi
           fi
 
-      - name: Build unsigned release APK
+      - name: Build unsigned Android APK
         run: |
           cd android
           chmod +x gradlew
           ./gradlew --no-daemon assembleRelease
 
-      - name: Sign, verify and name APK (fixed private signing key)
+      - name: Sign Android APK
         shell: bash
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
         run: |
           set -euo pipefail
+
           for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
             if [[ -z "${!name:-}" ]]; then
-              echo "::error::$name is missing. See SETUP_ANDROID.md; never put signing keys in the repository."
+              echo "::error::Missing signing secret: $name"
               exit 1
             fi
           done
+
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > signing-private.jks
+
           unsigned='android/app/build/outputs/apk/release/app-release-unsigned.apk'
+
           if [[ ! -f "$unsigned" ]]; then
-            echo "::error::Unsigned release APK not found at $unsigned"
-            ls -lah android/app/build/outputs/apk/release/
+            echo "::error::Unsigned APK not found."
             exit 1
           fi
+
           tools="$ANDROID_HOME/build-tools/36.0.0"
+
           "$tools/zipalign" -f -p 4 "$unsigned" aligned.apk
+
           version="$(node -p 'require("./package.json").version')"
           apk="Gurbani_Saanjh_v${version}.apk"
+
           "$tools/apksigner" sign \
             --ks signing-private.jks \
             --ks-key-alias "$ANDROID_KEY_ALIAS" \
             --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
             --key-pass env:ANDROID_KEY_PASSWORD \
             --out "$apk" aligned.apk
+
           "$tools/apksigner" verify --verbose "$apk"
+
           echo "APK_PATH=$apk" >> "$GITHUB_ENV"
+
           rm -f signing-private.jks aligned.apk
 
-      - name: Make signed APK downloadable from Actions
+      - name: Upload signed Android APK
         uses: actions/upload-artifact@v4
         with:
           name: Gurbani-Saanjh-Android-APK
@@ -127,17 +150,19 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publish signed APK to GitHub Releases (version tag only)
+      - name: Publish APK to GitHub Releases
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+
         run: |
           set -euo pipefail
+
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "$APK_PATH" --clobber
           else
             gh release create "$GITHUB_REF_NAME" "$APK_PATH" \
               --title "Gurbani Saanjh $GITHUB_REF_NAME" \
-              --notes "Android personal-trial release. Verified full scripture texts, licensed human paath audio and live AI are not included."
+              --notes "Android personal trial release."
           fi
