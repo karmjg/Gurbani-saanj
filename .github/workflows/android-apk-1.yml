@@ -23,7 +23,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          zip='GS_170_FRESH_SOURCE_20261103.zip'
+          zip='GS_v190_source.zip'
 
           if [[ ! -f "$zip" ]]; then
             echo "::error::Missing $zip in repository root."
