@@ -20,13 +20,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zip='GS_v210_source.zip'
+          zip='GS_v221_source.zip'
           if [[ ! -f "$zip" ]]; then
             echo "::error::Missing $zip in the repository root. Upload the ZIP as a file before running this workflow."
             exit 1
           fi
           unzip -oq "$zip" -d .
-          for required in package.json capacitor.config.json scripts/patch-android.mjs www/index.html www/scripture-search.js www/offline/manifest.json www/offline/search.json www/offline/kosh.json www/offline/ang/1.json; do
+          for required in package.json package-lock.json capacitor.config.json scripts/patch-android.mjs www/index.html www/render-verses.js www/vishraam.js www/kirtan-book.js www/scripture-search.js www/offline/manifest.json www/offline/search.json www/offline/kosh.json www/offline/kosh-stems.json www/offline/vishraam.json www/offline/kirtan-shabads.json www/offline/ang/1.json; do
             if [[ ! -f "$required" ]]; then
               echo "::error::App source ZIP does not contain $required at its top level."
               exit 1
@@ -58,12 +58,23 @@ jobs:
           node scripts/bundle-offline.mjs --fixture
           node test-reader.mjs
 
-      - name: Install Capacitor and compile local app resources
+      - name: Install dependencies (npm ci BEFORE cap sync)
+        # The native voice-search plugin (@capacitor-community/speech-recognition)
+        # is a native Android module: it MUST be installed from package-lock.json
+        # BEFORE `npx cap sync` so Capacitor registers it in the APK. Skipping
+        # this step (or running it after cap sync) ships a dead microphone.
+        run: npm ci --no-audit --no-fund
+
+      - name: Compile local app resources and verify voice bundle
         env:
           GS_GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          npm install --no-audit --no-fund
           npm run build:web
+          if ! grep -q "GS_SPEECH" www/native-updates.js; then
+            echo "::error::www/native-updates.js does not bundle the speech-recognition plugin (GS_SPEECH missing). Voice search would be dead; refusing to build."
+            exit 1
+          fi
+          echo "Voice bundle verified: GS_SPEECH present"
 
       - name: Create Android project
         run: |
@@ -72,6 +83,15 @@ jobs:
           node scripts/patch-android.mjs
         env:
           GS_VERSION_CODE: ${{ github.run_number }}
+
+      - name: Verify RECORD_AUDIO permission in manifest
+        shell: bash
+        run: |
+          if ! grep -q 'android.permission.RECORD_AUDIO' android/app/src/main/AndroidManifest.xml; then
+            echo "::error::RECORD_AUDIO missing from AndroidManifest.xml; voice search cannot request the microphone."
+            exit 1
+          fi
+          echo "RECORD_AUDIO present in manifest"
 
       - name: Check tag matches app version
         shell: bash
