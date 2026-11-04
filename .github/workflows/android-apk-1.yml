@@ -20,13 +20,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zip='GS_v200_source.zip'
+          zip='GS_v210_source.zip'
           if [[ ! -f "$zip" ]]; then
             echo "::error::Missing $zip in the repository root. Upload the ZIP as a file before running this workflow."
             exit 1
           fi
           unzip -oq "$zip" -d .
-          for required in package.json capacitor.config.json scripts/patch-android.mjs www/index.html www/scripture-search.js scripts/bundle-offline.mjs; do
+          for required in package.json capacitor.config.json scripts/patch-android.mjs www/index.html www/scripture-search.js www/offline/manifest.json www/offline/search.json www/offline/kosh.json www/offline/ang/1.json; do
             if [[ ! -f "$required" ]]; then
               echo "::error::App source ZIP does not contain $required at its top level."
               exit 1
@@ -57,10 +57,6 @@ jobs:
         run: |
           node scripts/bundle-offline.mjs --fixture
           node test-reader.mjs
-
-      - name: Build complete offline Gurbani library
-        run: node scripts/bundle-offline.mjs
-        timeout-minutes: 45
 
       - name: Install Capacitor and compile local app resources
         env:
@@ -150,5 +146,5 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" "$APK_PATH" \
               --title "Gurbani Saanjh $GITHUB_REF_NAME" \
-              --notes "Android personal-trial release. BaniDB source snapshot included for non-profit offline reading. Audio and live AI not included."
+              --notes "Android personal-trial release. Offline scripture from the Shabad OS database (MIT) with English word glosses from shabados/translation (CC BY-SA 4.0); non-profit personal use. Audio and live AI not included."
           fi
