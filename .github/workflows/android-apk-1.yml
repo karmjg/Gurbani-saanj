@@ -20,7 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zip='GS_v222_source.zip'
+          zip='GS_v226_source.zip'
           if [[ ! -f "$zip" ]]; then
             echo "::error::Missing $zip in the repository root. Upload the ZIP as a file before running this workflow."
             exit 1
