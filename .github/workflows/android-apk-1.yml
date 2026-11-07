@@ -20,7 +20,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zip='GSv244 zip.zip'
+          zip='GSv244.zip'
           if [[ ! -f "$zip" ]]; then
             echo "::error::Missing $zip in the repository root. Upload the ZIP as a file before running this workflow."
             exit 1
@@ -133,38 +133,4 @@ jobs:
             exit 1
           fi
           tools="$ANDROID_HOME/build-tools/36.0.0"
-          "$tools/zipalign" -f -p 4 "$unsigned" aligned.apk
-          version="$(node -p 'require("./package.json").version')"
-          apk="Gurbani_Saanjh_v${version}.apk"
-          "$tools/apksigner" sign \
-            --ks signing-private.jks \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
-            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --key-pass env:ANDROID_KEY_PASSWORD \
-            --out "$apk" aligned.apk
-          "$tools/apksigner" verify --verbose "$apk"
-          echo "APK_PATH=$apk" >> "$GITHUB_ENV"
-          rm -f signing-private.jks aligned.apk
-
-      - name: Make signed APK downloadable from Actions
-        uses: actions/upload-artifact@v4
-        with:
-          name: Gurbani-Saanjh-Android-APK
-          path: ${{ env.APK_PATH }}
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Publish signed APK to GitHub Releases (version tag only)
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$APK_PATH" --clobber
-          else
-            gh release create "$GITHUB_REF_NAME" "$APK_PATH" \
-              --title "Gurbani Saanjh $GITHUB_REF_NAME" \
-              --notes "Android personal-trial release. Offline scripture from the Shabad OS database (MIT) with English word glosses from shabados/translation (CC BY-SA 4.0); non-profit personal use. Audio and live AI not included."
-          fi
+          "
