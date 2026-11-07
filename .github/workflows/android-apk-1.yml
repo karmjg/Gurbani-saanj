@@ -20,13 +20,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          zip='GSv245.zip'
-          if [[ ! -f "$zip" ]]; then
-            echo "::error::Missing $zip in the repository root. Upload the ZIP as a file before running this workflow."
+          zip=''
+          best=''; bestver=0
+          for f in GSv*.zip; do
+            [ -f "$f" ] || continue
+            v="${f#GSv}"
+            v="${v%%[ .]*}"
+            case "$v" in ''|*[!0-9]*) continue;; esac
+            if [ "$v" -gt "$bestver" ]; then bestver="$v"; best="$f"; fi
+          done
+          zip="$best"
+          if [[ -z "$zip" || ! -f "$zip" ]]; then
+            echo "::error::Missing a GSv source ZIP in the repository root. Upload the ZIP as a file before running this workflow."
             exit 1
           fi
+          echo "Using source ZIP: $zip"
           unzip -oq "$zip" -d .
-          for required in package.json package-lock.json capacitor.config.json scripts/patch-android.mjs www/index.html www/render-verses.js www/vishraam.js www/kirtan-book.js www/scripture-search.js www/offline/manifest.json www/offline/search.json www/offline/kosh.json www/offline/kosh-stems.json www/offline/vishraam.json www/offline/kirtan-shabads.json www/offline/ang/1.json; do
+          for required in package.json package-lock.json capacitor.config.json scripts/patch-android.mjs www/index.html www/render-verses.js www/vishraam.js www/kirtan-book.js www/scripture-search.js www/offline/manifest.json www/offline/search.json www/offline/bani-search.json www/offline/kosh.json www/offline/kosh-stems.json www/offline/vishraam.json www/offline/kirtan-shabads.json www/offline/ang/1.json; do
             if [[ ! -f "$required" ]]; then
               echo "::error::App source ZIP does not contain $required at its top level."
               exit 1
