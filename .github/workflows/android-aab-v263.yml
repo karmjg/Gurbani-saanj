@@ -1,0 +1,171 @@
+name: Build Gurbani Saanjh Android AAB (Play Store)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  android-aab:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Get app files
+        uses: actions/checkout@v4
+
+      - name: Extract Android app source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip=''
+          best=''; bestver=0
+          for f in GSv*.zip; do
+            [ -f "$f" ] || continue
+            v="${f#GSv}"
+            v="${v%%[ .]*}"
+            case "$v" in ''|*[!0-9]*) continue;; esac
+            if [ "$v" -gt "$bestver" ]; then bestver="$v"; best="$f"; fi
+          done
+          zip="$best"
+          if [[ -z "$zip" || ! -f "$zip" ]]; then
+            echo "::error::Missing a GSv source ZIP in the repository root. Upload the ZIP as a file before running this workflow."
+            exit 1
+          fi
+          echo "Using source ZIP: $zip"
+          unzip -oq "$zip" -d .
+          for required in package.json package-lock.json capacitor.config.json scripts/patch-android.mjs www/index.html www/render-verses.js www/vishraam.js www/kirtan-book.js www/scripture-search.js www/offline/manifest.json www/offline/search.json www/offline/kosh.json www/offline/kosh-stems.json www/offline/vishraam.json www/offline/kirtan-shabads.json www/offline/ang/1.json; do
+            if [[ ! -f "$required" ]]; then
+              echo "::error::App source ZIP does not contain $required at its top level."
+              exit 1
+            fi
+          done
+          echo "Android source extracted successfully"
+
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Install Android 16 SDK and build tools
+        run: sdkmanager --install 'platforms;android-36' 'build-tools;36.0.0' 'platform-tools'
+
+      - name: Verify offline importer and search index against fixtures
+        run: |
+          node scripts/bundle-offline.mjs --fixture
+          node test-reader.mjs
+
+      - name: Install dependencies (npm ci BEFORE cap sync)
+        # The native voice-search plugin (@capacitor-community/speech-recognition)
+        # is a native Android module: it MUST be installed from package-lock.json
+        # BEFORE `npx cap sync` so Capacitor registers it in the APK. Skipping
+        # this step (or running it after cap sync) ships a dead microphone.
+        run: npm ci --no-audit --no-fund
+
+      - name: Compile local app resources and verify voice bundle
+        env:
+          GS_GITHUB_REPOSITORY: ${{ github.repository }}
+          # v2.2.43: Play Store build hides the AI settings (Bani View Preferences
+          # skips the whole AI section). The APK workflow never sets this, so the
+          # APK build keeps the settings. The AI itself (Ask via cloud) is NOT hidden.
+          GS_HIDE_AI_SETTINGS: '1'
+        run: |
+          npm run build:web
+          if ! grep -q "GS_SPEECH" www/native-updates.js; then
+            echo "::error::www/native-updates.js does not bundle the speech-recognition plugin (GS_SPEECH missing). Voice search would be dead; refusing to build."
+            exit 1
+          fi
+          echo "Voice bundle verified: GS_SPEECH present"
+
+      - name: Create Android project
+        run: |
+          npx cap add android
+          npx cap sync android
+          node scripts/patch-android.mjs
+        env:
+          GS_VERSION_CODE: ${{ github.run_number }}
+
+      - name: Verify RECORD_AUDIO permission in manifest
+        shell: bash
+        run: |
+          if ! grep -q 'android.permission.RECORD_AUDIO' android/app/src/main/AndroidManifest.xml; then
+            echo "::error::RECORD_AUDIO missing from AndroidManifest.xml; voice search cannot request the microphone."
+            exit 1
+          fi
+          echo "RECORD_AUDIO present in manifest"
+
+      - name: Check tag matches app version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            EXPECTED="v$(node -p 'require("./package.json").version')"
+            if [[ "$GITHUB_REF_NAME" != "$EXPECTED" ]]; then
+              echo "::error::Git tag $GITHUB_REF_NAME does not match package.json version $EXPECTED"
+              exit 1
+            fi
+          fi
+
+      - name: Build unsigned release AAB
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew --no-daemon bundleRelease
+
+      - name: Sign, verify and name AAB (fixed private signing key)
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::$name is missing. See SETUP_ANDROID.md; never put signing keys in the repository."
+              exit 1
+            fi
+          done
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > signing-private.jks
+          # bundleRelease produces an unsigned .aab (no signing config in the
+          # Capacitor project, same as the APK flow). Do NOT zipalign an AAB:
+          # zipalign is for APKs only; the Play Console rejects zipaligned AABs.
+          unsigned='android/app/build/outputs/bundle/release/app-release.aab'
+          if [[ ! -f "$unsigned" ]]; then
+            echo "::error::Unsigned release AAB not found at $unsigned"
+            ls -lah android/app/build/outputs/bundle/release/
+            exit 1
+          fi
+          tools="$ANDROID_HOME/build-tools/36.0.0"
+          version="$(node -p 'require("./package.json").version')"
+          aab="Gurbani_Saanjh_v${version}.aab"
+          "$tools/apksigner" sign \
+            --ks signing-private.jks \
+            --ks-key-alias "$ANDROID_KEY_ALIAS" \
+            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
+            --key-pass env:ANDROID_KEY_PASSWORD \
+            --out "$aab" "$unsigned"
+          "$tools/apksigner" verify --verbose "$aab"
+          echo "AAB_PATH=$aab" >> "$GITHUB_ENV"
+          rm -f signing-private.jks
+
+      - name: Make signed AAB downloadable from Actions
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gurbani-Saanjh-Android-AAB
+          path: ${{ env.AAB_PATH }}
+          if-no-files-found: error
+          retention-days: 30
