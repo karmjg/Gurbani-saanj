@@ -143,22 +143,22 @@ jobs:
           # bundleRelease produces an unsigned .aab (no signing config in the
           # Capacitor project, same as the APK flow). Do NOT zipalign an AAB:
           # zipalign is for APKs only; the Play Console rejects zipaligned AABs.
+          # An AAB is signed with jarsigner, NOT apksigner: apksigner expects an
+          # APK (it reads AndroidManifest.xml) and fails on a bundle with
+          # "Missing AndroidManifest.xml". jarsigner comes with the JDK.
           unsigned='android/app/build/outputs/bundle/release/app-release.aab'
           if [[ ! -f "$unsigned" ]]; then
             echo "::error::Unsigned release AAB not found at $unsigned"
             ls -lah android/app/build/outputs/bundle/release/
             exit 1
           fi
-          tools="$ANDROID_HOME/build-tools/36.0.0"
           version="$(node -p 'require("./package.json").version')"
           aab="Gurbani_Saanjh_v${version}.aab"
-          "$tools/apksigner" sign \
-            --ks signing-private.jks \
-            --ks-key-alias "$ANDROID_KEY_ALIAS" \
-            --ks-pass env:ANDROID_KEYSTORE_PASSWORD \
-            --key-pass env:ANDROID_KEY_PASSWORD \
-            --out "$aab" "$unsigned"
-          "$tools/apksigner" verify --verbose "$aab"
+          jarsigner -keystore signing-private.jks \
+            -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+            -keypass "$ANDROID_KEY_PASSWORD" \
+            -signedjar "$aab" "$unsigned" "$ANDROID_KEY_ALIAS"
+          jarsigner -verify -verbose "$aab"
           echo "AAB_PATH=$aab" >> "$GITHUB_ENV"
           rm -f signing-private.jks
 
